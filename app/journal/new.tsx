@@ -1,356 +1,331 @@
-import { useState, useEffect } from "react";
-import { View, Text, TextInput, TouchableOpacity, ScrollView, Platform } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { ScreenWrapper } from "../../components/ui/ScreenWrapper";
-import { ChevronLeft, Mic, StopCircle, Check, List, Sparkles, Pencil, Type, Tag, Calendar, X, Camera } from "lucide-react-native";
-import { Audio } from "expo-av";
-import { Card } from "../../components/ui/Card";
-import { database, useJournals } from "../../lib/db";
-import * as Haptics from 'expo-haptics';
+import React, { useState, useRef } from "react";
+import { View, Text, ScrollView, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform } from "react-native";
+import { useRouter, useLocalSearchParams } from "expo-router";
+import { ArrowLeft, Save, Share, Tag, Plus, Trash2, X, Square, Mic, MicOff } from "lucide-react-native";
+import { useStore } from "../../lib/store";
+import { Entry, EntryType } from "../../lib/types";
+import { useSpeechRecognition } from "../../lib/speech";
+import { cleanTranscript } from "../../lib/textCleanup";
+import { processRecipeTranscription, isGeminiAvailable } from "../../lib/gemini";
+import { RichEditor, RichToolbar, actions } from "react-native-pell-rich-editor";
 
-export default function NewJournalScreen() {
-    const { mode } = useLocalSearchParams<{ mode: "voice" | "text" | "image" }>();
+export default function NewEntryScreen() {
     const router = useRouter();
+    const params = useLocalSearchParams<{ type: string }>();
+    const { addEntry, updateEntry, entries, allTags } = useStore();
+    const entryType = (params.type || "note") as EntryType;
+    const speech = useSpeechRecognition();
+    const richText = useRef<RichEditor>(null);
 
-    const [currentMode, setCurrentMode] = useState<"voice" | "text" | "image">(mode || "text");
-    const [recording, setRecording] = useState<Audio.Recording | null>(null);
-    const [transcription, setTranscription] = useState("");
-    const [isRecording, setIsRecording] = useState(false);
+    const [entry, setEntry] = useState<Entry>(() => ({
+        id: Date.now().toString(36) + Math.random().toString(36).substring(2),
+        type: entryType,
+        title: "",
+        content: "",
+        tags: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        recipeData: entryType === "recipe" ? { ingredients: [""], steps: [""] } : undefined,
+    }));
 
-    const [title, setTitle] = useState("");
-    const [content, setContent] = useState("");
-    const [showSuccess, setShowSuccess] = useState(false);
+    const [showTagDropdown, setShowTagDropdown] = useState(false);
+    const [newTagInput, setNewTagInput] = useState("");
+    const [isProcessing, setIsProcessing] = useState(false);
 
-    useEffect(() => {
-        if (mode) setCurrentMode(mode);
-    }, [mode]);
+    const handleSave = () => {
+        const exists = entries.some((e) => e.id === entry.id);
+        if (exists) {
+            updateEntry(entry.id, entry);
+        } else {
+            addEntry(entry);
+        }
+        router.back();
+    };
 
-    async function startRecording() {
-        try {
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            await Audio.requestPermissionsAsync();
-            await Audio.setAudioModeAsync({
-                allowsRecordingIOS: true,
-                playsInSilentModeIOS: true,
-            });
+    const handleMicToggle = async () => {
+        if (speech.isListening) {
+            const rawTranscript = speech.stopListening();
+            const cleaned = cleanTranscript(rawTranscript.trim(), entry.type);
+            if (!cleaned) return;
 
-            const { recording } = await Audio.Recording.createAsync(
-                Audio.RecordingOptionsPresets.HIGH_QUALITY
-            );
-            setRecording(recording);
-            setIsRecording(true);
-
-            // Mock stream
-            const mockPhrases = ["I am thinking about the new design...", " It feels very calm and soft.", " Using 32px corners really makes a difference."];
-            let i = 0;
-            const interval = setInterval(() => {
-                if (i < mockPhrases.length) {
-                    setTranscription(prev => prev + mockPhrases[i]);
-                    setContent(prev => prev + mockPhrases[i]);
-                    i++;
-                } else { clearInterval(interval); }
-            }, 2000);
-
-        } catch (err) { console.error(err); }
-    }
-
-    async function stopRecording() {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-        setIsRecording(false);
-        await recording?.stopAndUnloadAsync();
-        setRecording(null);
-        setCurrentMode("text");
-    }
-
-    const [isAIThinking, setIsAIThinking] = useState(false);
-
-    const handleAIAction = async (action: string) => {
-        if (!content && action !== "Summary") return;
-
-        setIsAIThinking(true);
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-
-        // Simulate AI processing delay
-        await new Promise(resolve => setTimeout(resolve, 1500));
-
-        try {
-            if (action === "Summary") {
-                const summaryTitle = title || "Reflections on a Productive Day";
-                setTitle(summaryTitle);
-                // AI would normally derive this from content
-            } else if (action === "Bullets") {
-                const bullets = content
-                    .split(/[.!?]/)
-                    .filter(s => s.trim().length > 0)
-                    .map(s => `• ${s.trim()}`)
-                    .join('\n');
-                setContent(bullets);
-            } else if (action === "Clean up") {
-                // Mock cleanup: Capitalize and trim
-                const cleaned = content
-                    .split('\n')
-                    .map(line => line.trim())
-                    .filter(line => line.length > 0)
-                    .map(line => line.charAt(0).toUpperCase() + line.slice(1))
-                    .join('\n\n');
-                setContent(cleaned);
+            if (entry.type === "recipe" && isGeminiAvailable()) {
+                setIsProcessing(true);
+                try {
+                    const recipeData = await processRecipeTranscription(cleaned, entry.recipeData);
+                    setEntry(prev => ({
+                        ...prev,
+                        recipeData,
+                        originalTranscript: prev.originalTranscript ? prev.originalTranscript + "\n\n" + rawTranscript.trim() : rawTranscript.trim(),
+                        content: prev.content ? prev.content + "<br><br>" + cleaned : cleaned,
+                    }));
+                } catch (err) {
+                    console.error(err);
+                    setEntry(prev => ({
+                        ...prev,
+                        originalTranscript: prev.originalTranscript ? prev.originalTranscript + "\n\n" + rawTranscript.trim() : rawTranscript.trim(),
+                        content: prev.content ? prev.content + "<br><br><i>" + cleaned + "</i>" : "<i>" + cleaned + "</i>",
+                    }));
+                } finally {
+                    setIsProcessing(false);
+                }
+            } else {
+                // For Notes and Journal, insert the text into the RichEditor directly
+                if (richText.current) {
+                    richText.current.insertText(cleaned + " ");
+                    // We must still save the original transcript to state
+                    setEntry(prev => ({
+                        ...prev,
+                        originalTranscript: prev.originalTranscript ? prev.originalTranscript + "\n\n" + rawTranscript.trim() : rawTranscript.trim(),
+                    }));
+                } else {
+                    setEntry(prev => ({
+                        ...prev,
+                        originalTranscript: prev.originalTranscript ? prev.originalTranscript + "\n\n" + rawTranscript.trim() : rawTranscript.trim(),
+                        content: prev.content ? prev.content + "<br>" + cleaned : cleaned,
+                    }));
+                }
             }
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        } catch (error) {
-            console.error("AI action failed:", error);
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        } finally {
-            setIsAIThinking(false);
+            speech.resetTranscript();
+        } else {
+            speech.startListening();
         }
     };
 
-    const handleSave = async () => {
-        try {
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-            await database.write(async () => {
-                await useJournals().create((entry) => {
-                    entry.title = title || "Untitled Entry";
-                    entry.content = content;
-                    entry.date = new Date();
-                    entry.tags = [];
-                    entry.synced = false;
-                });
-            });
-
-            setShowSuccess(true);
-            setTimeout(() => {
-                setShowSuccess(false);
-                router.push("/");
-            }, 1500);
-        } catch (error) {
-            console.error("Failed to save journal entry:", error);
+    const addTag = (tag: string) => {
+        if (tag.trim() && !entry.tags.includes(tag.trim())) {
+            setEntry((prev) => ({ ...prev, tags: [...prev.tags, tag.trim()] }));
         }
+        setShowTagDropdown(false);
+        setNewTagInput("");
     };
 
-    if (showSuccess) {
-        return (
-            <ScreenWrapper bgClass="bg-accent" className="items-center justify-center">
-                <View className="items-center animate-bounce">
-                    <View className="w-24 h-24 bg-white rounded-full items-center justify-center shadow-xl shadow-black/10 mb-6">
-                        <Check size={48} color="#10B981" />
-                    </View>
-                    <Text className="text-white text-3xl font-heading font-bold">Entry Saved!</Text>
-                    <Text className="text-white/80 font-body mt-2">Moment captured beautifully.</Text>
-                </View>
-            </ScreenWrapper>
-        );
-    }
+    const removeTag = (tag: string) => {
+        setEntry((prev) => ({ ...prev, tags: prev.tags.filter((t) => t !== tag) }));
+    };
 
-    if (currentMode === "voice") {
-        return (
-            <ScreenWrapper bgClass="bg-primary" className="px-0">
-                <View className="flex-1 justify-between py-10 px-8">
-                    <View className="flex-row items-center justify-between">
-                        <TouchableOpacity
-                            onPress={() => router.back()}
-                            className="w-12 h-12 items-center justify-center bg-white/20 rounded-full border border-white/10"
-                        >
-                            <X size={20} color="white" />
-                        </TouchableOpacity>
-                        <Text className="text-white/80 text-xs font-body font-bold uppercase tracking-widest">Voice Recording</Text>
-                        <View className="w-12" />
-                    </View>
+    const updateRecipeList = (list: "ingredients" | "steps", index: number, value: string) => {
+        setEntry((prev) => {
+            const data = prev.recipeData || { ingredients: [], steps: [] };
+            const newList = [...data[list]];
+            newList[index] = value;
+            return { ...prev, recipeData: { ...data, [list]: newList } };
+        });
+    };
 
-                    <View className="flex-1 justify-center">
-                        <View className="bg-white/10 p-2 rounded-lg self-start mb-6 border border-white/5">
-                            <Text className="text-secondary font-body font-bold uppercase tracking-widest text-[10px]">Live Transcription</Text>
-                        </View>
-                        <ScrollView showsVerticalScrollIndicator={false}>
-                            <Text className="text-4xl text-white font-heading leading-snug">
-                                {transcription || "Start speaking..."}
-                                {isRecording && <Text className="text-accent">|</Text>}
-                            </Text>
-                        </ScrollView>
-                    </View>
+    const addRecipeItem = (list: "ingredients" | "steps") => {
+        setEntry((prev) => {
+            const data = prev.recipeData || { ingredients: [], steps: [] };
+            return { ...prev, recipeData: { ...data, [list]: [...data[list], ""] } };
+        });
+    };
 
-                    <View className="items-center">
-                        <Text className="text-white/60 font-mono text-lg mb-10">
-                            {isRecording ? "00:12" : "00:00"}
-                        </Text>
-
-                        <TouchableOpacity
-                            onPress={isRecording ? stopRecording : startRecording}
-                            className={`w-28 h-28 rounded-full items-center justify-center ${isRecording ? 'bg-white' : 'bg-accent'} shadow-2xl shadow-black/20 transform active:scale-95 transition-all`}
-                        >
-                            {isRecording ? (
-                                <StopCircle size={40} color="#8B5CF6" />
-                            ) : (
-                                <Mic size={40} color="white" />
-                            )}
-                        </TouchableOpacity>
-
-                        <TouchableOpacity onPress={() => setCurrentMode("text")} className="mt-12 bg-white/10 px-6 py-3 rounded-full border border-white/10">
-                            <Text className="text-white font-body font-bold text-sm">Switch to Typing</Text>
-                        </TouchableOpacity>
-                    </View>
-                </View>
-            </ScreenWrapper>
-        );
-    }
-
-    if (currentMode === "image") {
-        return (
-            <ScreenWrapper bgClass="bg-black" className="px-0">
-                <View className="flex-1 justify-between py-10 px-8">
-                    <View className="flex-row items-center justify-between">
-                        <TouchableOpacity
-                            onPress={() => router.back()}
-                            className="w-12 h-12 items-center justify-center bg-white/10 rounded-full border border-white/10"
-                        >
-                            <X size={20} color="white" />
-                        </TouchableOpacity>
-                        <Text className="text-white/80 text-xs font-body font-bold uppercase tracking-widest">Capture Moment</Text>
-                        <View className="w-12" />
-                    </View>
-
-                    <View className="flex-1 items-center justify-center">
-                        <View className="w-full aspect-[4/3] bg-white/5 rounded-3xl border border-dashed border-white/20 items-center justify-center border-spacing-4">
-                            <Camera size={48} color="white" opacity={0.3} />
-                            <Text className="text-white/40 font-body mt-4">Camera Placeholder</Text>
-                        </View>
-                        <Text className="text-white/60 font-body mt-8 text-center px-10 leading-relaxed text-sm">
-                            Focus on a memory that brings you joy today and capture it as a permanent reflection.
-                        </Text>
-                    </View>
-
-                    <View className="items-center">
-                        <TouchableOpacity
-                            onPress={() => {
-                                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                                setCurrentMode("text");
-                                setContent("Image Note: [Captured Memory Placeholder]\n\n" + (content || "Reflect on this moment..."));
-                            }}
-                            className="w-24 h-24 rounded-full bg-white items-center justify-center shadow-2xl shadow-white/10 active:scale-90 transition-transform"
-                        >
-                            <View className="w-20 h-20 rounded-full border-4 border-black/5 items-center justify-center">
-                                <View className="w-16 h-16 rounded-full bg-black/5" />
-                            </View>
-                        </TouchableOpacity>
-                        <Text className="text-white/40 font-body mt-6 text-xs uppercase tracking-widest">Tap to capture</Text>
-                    </View>
-                </View>
-            </ScreenWrapper>
-        );
-    }
+    const removeRecipeItem = (list: "ingredients" | "steps", index: number) => {
+        setEntry((prev) => {
+            const data = prev.recipeData || { ingredients: [], steps: [] };
+            const newList = [...data[list]];
+            newList.splice(index, 1);
+            return { ...prev, recipeData: { ...data, [list]: newList } };
+        });
+    };
 
     return (
-        <ScreenWrapper bgClass="bg-brand-bg">
-            <ScrollView className="flex-1" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 150 }}>
-                <View className="flex-row justify-between items-center py-6 px-4">
-                    <TouchableOpacity
-                        onPress={() => router.back()}
-                        className="w-12 h-12 items-center justify-center bg-white rounded-full shadow-sm shadow-primary/10 border border-white/20"
-                    >
-                        <ChevronLeft size={24} color="#8B5CF6" />
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            <View className="flex-1 bg-slate-50">
+                {/* Header */}
+                <View className="flex-row items-center justify-between p-6 bg-white z-10" style={{ shadowColor: "#000", shadowOpacity: 0.03, shadowRadius: 4, elevation: 2 }}>
+                    <TouchableOpacity onPress={() => router.back()} className="p-3 bg-slate-50 rounded-full">
+                        <ArrowLeft size={20} color="#475569" />
                     </TouchableOpacity>
-                    <TouchableOpacity
-                        onPress={handleSave}
-                        className="bg-accent px-10 py-4 rounded-full shadow-lg shadow-accent/20 flex-row items-center active:scale-95 transition-all"
-                    >
-                        <Check size={18} color="white" className="mr-2" />
-                        <Text className="text-white font-body font-bold text-base">Save Note</Text>
-                    </TouchableOpacity>
+                    <Text className="font-semibold text-lg capitalize text-slate-900">Create {entry.type}</Text>
+                    <View className="flex-row gap-2">
+                        <TouchableOpacity onPress={handleSave} className="p-3 bg-blue-50 rounded-full">
+                            <Save size={20} color="#2563eb" />
+                        </TouchableOpacity>
+                        <TouchableOpacity className="p-3 bg-slate-50 rounded-full">
+                            <Share size={20} color="#475569" />
+                        </TouchableOpacity>
+                    </View>
                 </View>
 
-                <TextInput
-                    className="text-5xl font-heading font-bold text-text-main mb-8 px-2"
-                    placeholder="Title"
-                    value={title}
-                    onChangeText={setTitle}
-                    placeholderTextColor="#C4B5FD"
-                />
-
-                <View className="relative">
-                    <Card className="min-h-[400px] mb-8 p-8 bg-white/90 border-white/40 shadow-blue-50">
-                        <TextInput
-                            className="flex-1 text-xl text-text-main/80 font-body leading-relaxed"
-                            placeholder="Start writing your thoughts..."
-                            multiline
-                            textAlignVertical="top"
-                            value={content}
-                            onChangeText={setContent}
-                            placeholderTextColor="#C4B5FD"
-                            editable={!isAIThinking}
+                {/* Rich Toolbar at the TOP for Notes/Journals (Native Only) */}
+                {(entry.type === "note" || entry.type === "journal") && Platform.OS !== 'web' && (
+                    <View className="border-b border-slate-200 bg-white" style={{ zIndex: 10 }}>
+                        <RichToolbar
+                            editor={richText}
+                            actions={[
+                                actions.heading1,
+                                actions.setBold,
+                                actions.setItalic,
+                                actions.insertBulletsList,
+                                actions.checkboxList,
+                                actions.keyboard
+                            ]}
+                            iconTint="#475569"
+                            selectedIconTint="#2563eb"
+                            style={{ backgroundColor: '#ffffff', borderBottomWidth: 1, borderColor: '#f1f5f9' }}
                         />
-                    </Card>
+                    </View>
+                )}
 
-                    {isAIThinking && (
-                        <View className="absolute inset-0 bg-white/60 rounded-[32px] items-center justify-center z-10">
-                            <View className="bg-white p-6 rounded-3xl shadow-xl shadow-primary/20 items-center">
-                                <Sparkles size={32} color="#8B5CF6" className="animate-spin mb-4" />
-                                <Text className="text-text-main font-heading font-bold text-lg">AI is thinking...</Text>
-                                <Text className="text-primary/60 font-body text-xs mt-1">Polishing your thoughts</Text>
+                <ScrollView className="flex-1 p-6" contentContainerStyle={{ paddingBottom: 160 }} showsVerticalScrollIndicator={false}>
+                    {/* Title */}
+                    <View className="mb-6">
+                        <TextInput
+                            placeholder="Title..."
+                            value={entry.title}
+                            onChangeText={(text) => setEntry({ ...entry, title: text })}
+                            className="text-2xl font-semibold text-slate-900"
+                            placeholderTextColor="#cbd5e1"
+                        />
+                    </View>
+
+                    {/* Tags */}
+                    {entry.tags.length > 0 && (
+                        <View className="flex-row flex-wrap gap-2 mb-6">
+                            {entry.tags.map((tag) => (
+                                <View key={tag} className="flex-row items-center gap-1 px-3 py-1 bg-blue-50 rounded-full">
+                                    <Text className="text-sm font-medium text-blue-700">{tag}</Text>
+                                    <TouchableOpacity onPress={() => removeTag(tag)}>
+                                        <X size={14} color="#1d4ed8" />
+                                    </TouchableOpacity>
+                                </View>
+                            ))}
+                        </View>
+                    )}
+
+                    {/* Live Transcript Preview (Visually Distinct & Temporary) */}
+                    {(speech.isListening) && (
+                        <View className="bg-blue-50 p-4 rounded-2xl mb-4 border border-blue-100">
+                            <View className="flex-row items-center gap-2 mb-2">
+                                <View className="w-2 h-2 rounded-full bg-red-500" />
+                                <Text className="text-xs font-semibold text-blue-700 uppercase tracking-wider">
+                                    Listening...
+                                </Text>
+                            </View>
+                            <Text className="text-sm text-slate-700 leading-relaxed italic">
+                                {speech.fullTranscript || "Speak now..."}
+                            </Text>
+                        </View>
+                    )}
+
+                    {/* Processing indicator */}
+                    {isProcessing && (
+                        <View className="bg-purple-50 p-4 rounded-2xl mb-4 border border-purple-100 flex-row items-center gap-3">
+                            <ActivityIndicator size="small" color="#9333ea" />
+                            <Text className="text-sm font-medium text-purple-700">Extracting recipe with Gemini AI...</Text>
+                        </View>
+                    )}
+
+                    {/* Content Area — Note/Journal (True WYSIWYG for Native, Text for Web) */}
+                    {(entry.type === "note" || entry.type === "journal") && (
+                        <View className="bg-white rounded-3xl overflow-hidden mb-6" style={{ shadowColor: "#000", shadowOpacity: 0.03, shadowRadius: 8, elevation: 2, minHeight: 300 }}>
+                            {Platform.OS === 'web' ? (
+                                <TextInput
+                                    placeholder="Write your thoughts... (Rich Editor available on App)"
+                                    value={entry.content}
+                                    onChangeText={(text) => setEntry({ ...entry, content: text })}
+                                    multiline
+                                    className="bg-white p-6 rounded-3xl text-slate-700 leading-relaxed flex-1"
+                                    placeholderTextColor="#94a3b8"
+                                    textAlignVertical="top"
+                                />
+                            ) : (
+                                <RichEditor
+                                    ref={richText}
+                                    initialContentHTML={entry.content}
+                                    onChange={(html) => setEntry({ ...entry, content: html })}
+                                    placeholder="Write your thoughts..."
+                                    editorStyle={{ backgroundColor: '#ffffff', color: '#334155' }}
+                                    useContainer={false}
+                                    initialHeight={300}
+                                    style={{ flex: 1, padding: 10 }}
+                                />
+                            )}
+                        </View>
+                    )}
+
+                    {/* Content Area — Recipe */}
+                    {entry.type === "recipe" && (
+                        <View className="gap-6">
+                            <View className="bg-white p-6 rounded-3xl" style={{ shadowColor: "#000", shadowOpacity: 0.03, shadowRadius: 8, elevation: 2 }}>
+                                <View className="flex-row justify-between items-center mb-4">
+                                    <Text className="font-semibold text-lg text-slate-900">Ingredients</Text>
+                                    <TouchableOpacity onPress={() => addRecipeItem("ingredients")} className="p-2 rounded-full border border-blue-100"><Plus size={20} color="#2563eb" /></TouchableOpacity>
+                                </View>
+                                {entry.recipeData?.ingredients.map((ing, i) => (
+                                    <View key={i} className="flex-row items-center gap-2 mb-3">
+                                        <Square size={20} color="#cbd5e1" />
+                                        <TextInput value={ing} onChangeText={(v) => updateRecipeList("ingredients", i, v)} className="flex-1 border-b border-slate-100 py-1 text-slate-700" placeholder="Ingredient..." placeholderTextColor="#94a3b8" />
+                                        <TouchableOpacity onPress={() => removeRecipeItem("ingredients", i)} className="p-1"><Trash2 size={16} color="#f87171" /></TouchableOpacity>
+                                    </View>
+                                ))}
+                            </View>
+                            <View className="bg-white p-6 rounded-3xl" style={{ shadowColor: "#000", shadowOpacity: 0.03, shadowRadius: 8, elevation: 2 }}>
+                                <View className="flex-row justify-between items-center mb-4">
+                                    <Text className="font-semibold text-lg text-slate-900">Steps</Text>
+                                    <TouchableOpacity onPress={() => addRecipeItem("steps")} className="p-2 rounded-full border border-blue-100"><Plus size={20} color="#2563eb" /></TouchableOpacity>
+                                </View>
+                                {entry.recipeData?.steps.map((step, i) => (
+                                    <View key={i} className="flex-row items-start gap-3 mb-3">
+                                        <View className="bg-slate-100 w-6 h-6 rounded-full items-center justify-center mt-1">
+                                            <Text className="text-xs font-medium text-slate-500">{i + 1}</Text>
+                                        </View>
+                                        <TextInput value={step} onChangeText={(v) => updateRecipeList("steps", i, v)} multiline className="flex-1 border-b border-slate-100 py-1 text-slate-700" placeholder="Step description..." placeholderTextColor="#94a3b8" />
+                                        <TouchableOpacity onPress={() => removeRecipeItem("steps", i)} className="p-1 mt-1"><Trash2 size={16} color="#f87171" /></TouchableOpacity>
+                                    </View>
+                                ))}
                             </View>
                         </View>
                     )}
-                </View>
 
-                {/* AI Assistant Section */}
-                <View className="mb-12">
-                    <Text className="text-primary/40 text-[10px] font-body font-bold uppercase tracking-widest mb-6 ml-2">Editor Assistant</Text>
-                    <View className="flex-row flex-wrap gap-4">
-                        <AICardSmall
-                            icon={Sparkles}
-                            label="Summary"
-                            color="bg-primary/10"
-                            iconColor="#8B5CF6"
-                            onPress={() => handleAIAction("Summary")}
-                        />
-                        <AICardSmall
-                            icon={Pencil}
-                            label="Clean up"
-                            color="bg-accent/10"
-                            iconColor="#10B981"
-                            onPress={() => handleAIAction("Clean up")}
-                        />
-                        <AICardSmall
-                            icon={List}
-                            label="Bullets"
-                            color="bg-secondary/20"
-                            iconColor="#8B5CF6"
-                            onPress={() => handleAIAction("Bullets")}
-                        />
+                    {/* Tag Action */}
+                    <View className="mt-6">
+                        <TouchableOpacity onPress={() => setShowTagDropdown(!showTagDropdown)} className="flex-row items-center gap-2 px-4 py-2 bg-white rounded-full self-start" style={{ shadowColor: "#000", shadowOpacity: 0.03, shadowRadius: 4, elevation: 2 }}>
+                            <Tag size={16} color="#f87171" />
+                            <Text className="text-sm font-medium text-slate-600">Add Tag</Text>
+                        </TouchableOpacity>
+                        {showTagDropdown && (
+                            <View className="mt-2 bg-white rounded-2xl p-3 border border-slate-100" style={{ shadowColor: "#000", shadowOpacity: 0.1, shadowRadius: 12, elevation: 6 }}>
+                                {allTags.filter((t) => !entry.tags.includes(t)).map((tag) => (
+                                    <TouchableOpacity key={tag} onPress={() => addTag(tag)} className="px-3 py-2 rounded-xl">
+                                        <Text className="text-sm text-slate-700">{tag}</Text>
+                                    </TouchableOpacity>
+                                ))}
+                                <View className="flex-row gap-2 mt-2 pt-2 border-t border-slate-100">
+                                    <TextInput value={newTagInput} onChangeText={setNewTagInput} placeholder="New tag..." className="flex-1 bg-slate-50 rounded-lg px-2 py-1.5 text-sm" placeholderTextColor="#94a3b8" onSubmitEditing={() => addTag(newTagInput)} />
+                                    <TouchableOpacity onPress={() => addTag(newTagInput)} className="p-1.5 bg-blue-50 rounded-lg"><Plus size={16} color="#2563eb" /></TouchableOpacity>
+                                </View>
+                            </View>
+                        )}
                     </View>
-                </View>
-            </ScrollView>
+                </ScrollView>
 
-            {/* Float Toolbar */}
-            <View className="absolute bottom-10 left-6 right-6 flex-row justify-between items-center py-5 px-8 bg-white/90 border border-white/20 rounded-full shadow-xl shadow-primary/10">
-                <View className="flex-row gap-10">
-                    <TouchableOpacity><List size={22} color="#C4B5FD" /></TouchableOpacity>
-                    <TouchableOpacity><Tag size={22} color="#C4B5FD" /></TouchableOpacity>
-                    <TouchableOpacity><Calendar size={22} color="#C4B5FD" /></TouchableOpacity>
-                </View>
-                <TouchableOpacity
-                    onPress={() => {
-                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                        setCurrentMode("voice");
-                    }}
-                    className="w-12 h-12 bg-primary/10 rounded-full items-center justify-center border border-primary/20"
-                >
-                    <Mic size={20} color="#8B5CF6" />
-                </TouchableOpacity>
+                {/* Floating Mic Button */}
+                {speech.isSupported && (
+                    <View className="absolute bottom-8 left-0 right-0 items-center z-50" style={{ pointerEvents: 'box-none' }}>
+                        <TouchableOpacity
+                            onPress={handleMicToggle}
+                            disabled={isProcessing}
+                            className={`rounded-full p-5 ${speech.isListening ? "bg-red-500" : "bg-blue-600"}`}
+                            style={{
+                                shadowColor: speech.isListening ? "#ef4444" : "#2563eb",
+                                shadowOffset: { width: 0, height: 4 },
+                                shadowOpacity: 0.35,
+                                shadowRadius: 10,
+                                elevation: 10,
+                            }}
+                        >
+                            {isProcessing ? (
+                                <ActivityIndicator size={24} color="#ffffff" />
+                            ) : speech.isListening ? (
+                                <MicOff size={24} color="#ffffff" />
+                            ) : (
+                                <Mic size={24} color="#ffffff" />
+                            )}
+                        </TouchableOpacity>
+                    </View>
+                )}
             </View>
-        </ScreenWrapper>
+        </KeyboardAvoidingView>
     );
 }
-
-function AICardSmall({ icon: Icon, label, color, iconColor, onPress }: { icon: any, label: string, color: string, iconColor: string, onPress: () => void }) {
-    return (
-        <TouchableOpacity
-            onPress={onPress}
-            activeOpacity={0.7}
-            className={`${color} rounded-[24px] px-6 py-4 flex-row items-center border border-white/20 shadow-sm shadow-black/5`}
-        >
-            <Icon size={14} color={iconColor} className="mr-3" />
-            <Text className="text-text-main font-body font-bold text-xs">{label}</Text>
-        </TouchableOpacity>
-    );
-}
-

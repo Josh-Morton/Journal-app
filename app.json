@@ -13,7 +13,11 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSSpeechRecognitionUsageDescription": "This app uses speech recognition to transcribe your voice notes.",
+        "NSMicrophoneUsageDescription": "This app uses the microphone to record voice notes."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -30,6 +34,9 @@
       "expo-router",
       "expo-web-browser",
       "expo-secure-store"
-    ]
+    ],
+    "updates": {
+      "enabled": false
+    }
   }
 }

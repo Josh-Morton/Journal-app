@@ -1,181 +1,258 @@
-import { View, Text, ScrollView, Image, TouchableOpacity } from "react-native";
+import React, { useState, useMemo } from "react";
+import { View, Text, ScrollView, TouchableOpacity, TextInput, Image } from "react-native";
 import { useRouter } from "expo-router";
-import { Home, Mic, Camera, ChevronRight, Sparkles, Pencil, List, Heading } from "lucide-react-native";
+import { Search, Settings, Bell, ChevronLeft, ChevronRight, Mic } from "lucide-react-native";
+import { useStore } from "../../lib/store";
+import { Entry } from "../../lib/types";
 import { useAuth } from "../../lib/auth/google";
-import { ScreenWrapper } from "../../components/ui/ScreenWrapper";
-import { SearchBar } from "../../components/ui/SearchBar";
-import { Card } from "../../components/ui/Card";
-import { useState, useEffect } from "react";
-import { database, useJournals } from "../../lib/db";
-import { Journal } from "../../models/Journal";
-import { Q } from "@nozbe/watermelondb";
+import {
+    startOfMonth,
+    endOfMonth,
+    eachDayOfInterval,
+    format,
+    isSameDay,
+    addMonths,
+    subMonths,
+} from "date-fns";
+import { Cloud } from "lucide-react-native";
+import { Alert } from "react-native";
+import { syncEntriesToDrive, SyncProgressStatus } from "../../lib/drive";
+import { DriveSyncModal } from "../../components/ui/DriveSyncModal";
 
-export default function HomeScreen() {
-    const { user } = useAuth();
-    const router = useRouter();
-    const [recentEntries, setRecentEntries] = useState<Journal[]>([]);
-
-    useEffect(() => {
-        const fetchRecent = async () => {
-            try {
-                const data = await useJournals()
-                    .query(Q.sortBy('created_at', Q.desc), Q.take(3))
-                    .fetch();
-                setRecentEntries(data);
-            } catch (error) {
-                console.error("Error fetching journals:", error);
-            }
-        };
-        fetchRecent();
-    }, []);
-
-    const formatDate = (date: Date) => {
-        if (!date) return "Just now";
-        const now = new Date();
-        const diff = now.getTime() - date.getTime();
-        const hours = Math.floor(diff / (1000 * 60 * 60));
-        if (hours < 1) return "Just now";
-        if (hours < 24) return `${hours} hours ago`;
-        return date.toLocaleDateString();
-    };
-
-    return (
-        <ScreenWrapper className="px-0">
-            <ScrollView
-                className="flex-1"
-                contentContainerStyle={{ paddingBottom: 120, paddingHorizontal: 20 }}
-                showsVerticalScrollIndicator={false}
-            >
-                {/* Header - Minimal & Calm */}
-                <View className="flex-row justify-between items-center mb-8 mt-4">
-                    <View>
-                        <Text className="text-primary/60 text-xs font-heading font-semibold uppercase tracking-widest mb-1">Morning Reflection</Text>
-                        <Text className="text-4xl font-heading font-bold text-text-main">
-                            Hello, {user?.name?.split(" ")[0] || "there"}
-                        </Text>
-                    </View>
-                    <View className="w-12 h-12 bg-white/80 rounded-full items-center justify-center shadow-sm shadow-primary/10 border border-white/20">
-                        {user?.picture ? (
-                            <Image source={{ uri: user.picture }} className="w-12 h-12 rounded-full" />
-                        ) : (
-                            <Home size={24} color="#8B5CF6" />
-                        )}
-                    </View>
-                </View>
-
-                {/* Search - Soft & Inset */}
-                <SearchBar placeholder="Search your thoughts..." className="mb-8 bg-white border-0" />
-
-                {/* Note Types - Soft Horizontal/Standard Cards */}
-                <Text className="text-xs font-body font-bold text-primary/40 uppercase tracking-widest mb-4 ml-1">New Entry</Text>
-
-                {/* Voice Note - Primary Action (Soft Blue Tint) */}
-                <Card
-                    className="bg-primary/10 border-primary/20 flex-row items-center p-6"
-                    onPress={() => {
-                        import('expo-haptics').then(Haptics => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success));
-                        router.push("/journal/new?mode=voice");
-                    }}
-                >
-                    <View className="w-14 h-14 bg-white/80 rounded-2xl items-center justify-center mr-5 shadow-sm shadow-primary/20 border border-white/20">
-                        <Mic size={24} color="#8B5CF6" />
-                    </View>
-                    <View className="flex-1">
-                        <Text className="text-text-main text-xl font-heading font-bold">Voice Note</Text>
-                        <Text className="text-primary/60 text-sm font-body mt-1">Capture your thoughts instantly</Text>
-                    </View>
-                    <ChevronRight size={20} color="#C4B5FD" />
-                </Card>
-
-                {/* Other Types - Soft White Cards */}
-                <View className="flex-row gap-4 mb-8">
-                    <Card
-                        className="flex-1 p-5 items-start justify-between h-40"
-                        onPress={() => router.push("/journal/new?mode=text")}
-                    >
-                        <View className="w-10 h-10 bg-primary/10 rounded-xl items-center justify-center">
-                            <Heading size={18} color="#8B5CF6" />
-                        </View>
-                        <View>
-                            <Text className="text-text-main font-heading font-bold text-lg">Text Note</Text>
-                            <Text className="text-primary/40 text-xs font-body mt-1">Write it down</Text>
-                        </View>
-                    </Card>
-
-                    <Card
-                        className="flex-1 p-5 items-start justify-between h-40"
-                        onPress={() => router.push("/journal/new?mode=image")}
-                    >
-                        <View className="w-10 h-10 bg-primary/10 rounded-xl items-center justify-center">
-                            <Camera size={18} color="#8B5CF6" />
-                        </View>
-                        <View>
-                            <Text className="text-text-main font-heading font-bold text-lg">Image Note</Text>
-                            <Text className="text-primary/40 text-xs font-body mt-1">Save a memory</Text>
-                        </View>
-                    </Card>
-                </View>
-
-                {/* AI Assist Section - Clearly Separated Grid */}
-                <View className="mb-8">
-                    <Text className="text-xs font-body font-bold text-primary/40 uppercase tracking-widest mb-4 ml-1">AI Assistant</Text>
-                    <View className="flex-row flex-wrap gap-3">
-                        <AICard icon={Sparkles} label="Summarise" color="bg-primary/10" iconColor="#8B5CF6" />
-                        <AICard icon={Pencil} label="Rewrite" color="bg-accent/10" iconColor="#10B981" />
-                        <AICard icon={List} label="Bullet points" color="bg-secondary/20" iconColor="#C4B5FD" />
-                        <AICard icon={Heading} label="Auto Title" color="bg-primary/5" iconColor="#8B5CF6" />
-                    </View>
-                </View>
-
-                {/* Recent Section */}
-                <View className="flex-row justify-between items-end mb-4 ml-1">
-                    <Text className="text-xs font-body font-bold text-primary/40 uppercase tracking-widest">Recent Notes</Text>
-                    <TouchableOpacity onPress={() => router.push("/notes")}><Text className="text-accent text-xs font-bold font-body">View All</Text></TouchableOpacity>
-                </View>
-
-                {recentEntries.length > 0 ? (
-                    recentEntries.map((entry) => (
-                        <Card key={entry.id} className="mb-4" onPress={() => router.push(`/journal/${entry.id}`)}>
-                            <Text className="text-primary/40 text-[10px] font-body font-bold uppercase mb-2">
-                                {formatDate(entry.createdAt)} • {entry.tags?.join(", ") || "General"}
-                            </Text>
-                            <Text className="text-text-main text-lg font-heading font-bold mb-1">{entry.title}</Text>
-                            <Text className="text-text-main/70 text-sm font-body leading-6" numberOfLines={2}>
-                                {entry.content}
-                            </Text>
-                        </Card>
-                    ))
-                ) : (
-                    <Card className="items-center py-10 opacity-60">
-                        <Sparkles size={24} color="#8B5CF6" className="mb-2" />
-                        <Text className="text-text-main font-body text-sm">No entries yet. Start capturing!</Text>
-                    </Card>
-                )}
-
-
-            </ScrollView>
-
-            {/* Floating Pill Tab Bar Placeholder logic is in _layout.tsx, 
-          but we ensure padding handles it */}
-        </ScreenWrapper>
-    );
+function getEntryBgColor(type: string) {
+    switch (type) {
+        case "note": return "bg-blue-50";
+        case "journal": return "bg-purple-50";
+        case "recipe": return "bg-orange-50";
+        default: return "bg-slate-50";
+    }
 }
 
-function AICard({ icon: Icon, label, color, iconColor }: { icon: any, label: string, color: string, iconColor: string }) {
-    const handlePress = () => {
-        import('expo-haptics').then(Haptics => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light));
+function getEntryTextColor(type: string) {
+    switch (type) {
+        case "note": return "text-blue-700";
+        case "journal": return "text-purple-700";
+        case "recipe": return "text-orange-700";
+        default: return "text-slate-700";
+    }
+}
+
+function getDotColor(type: string) {
+    switch (type) {
+        case "note": return "bg-blue-500";
+        case "journal": return "bg-purple-500";
+        case "recipe": return "bg-orange-500";
+        default: return "bg-slate-300";
+    }
+}
+
+export default function HomeScreen() {
+    const { entries } = useStore();
+    const { user, accessToken, signIn } = useAuth();
+    const router = useRouter();
+    const [baseDate, setBaseDate] = useState(() => startOfMonth(new Date()));
+
+    const [syncVisible, setSyncVisible] = useState(false);
+    const [syncStatus, setSyncStatus] = useState<SyncProgressStatus | null>(null);
+    const [syncFolderId, setSyncFolderId] = useState<string | undefined>();
+
+    const handlePrevMonth = () => setBaseDate((prev) => subMonths(prev, 1));
+    const handleNextMonth = () => setBaseDate((prev) => addMonths(prev, 1));
+
+    const handleSync = async () => {
+        if (!accessToken) {
+            Alert.alert("Authentication Required", "Please sign in with Google to sync to Drive.", [
+                { text: "Cancel", style: "cancel" },
+                { text: "Sign In", onPress: () => signIn() }
+            ]);
+            return;
+        }
+
+        try {
+            setSyncVisible(true);
+            setSyncStatus("Checking Drive...");
+            const folderId = await syncEntriesToDrive(entries, accessToken, setSyncStatus);
+            setSyncFolderId(folderId);
+        } catch (error) {
+            console.error(error);
+            setSyncStatus("Error");
+        }
+    };
+
+    const renderMonth = (date: Date) => {
+        const monthStart = startOfMonth(date);
+        const monthEnd = endOfMonth(date);
+        const daysInMonth = eachDayOfInterval({ start: monthStart, end: monthEnd });
+        const dayHeaders = ["S", "M", "T", "W", "T", "F", "S"];
+
+        return (
+            <View className="bg-white p-4 rounded-3xl flex-1 min-w-[280px]" style={{ shadowColor: "#000", shadowOpacity: 0.03, shadowRadius: 8, elevation: 2 }}>
+                <Text className="text-center font-medium mb-4 text-slate-800">{format(date, "MMMM yyyy")}</Text>
+                <View className="flex-row flex-wrap">
+                    {dayHeaders.map((day, i) => (
+                        <View key={`h-${i}`} style={{ width: "14.28%" }} className="items-center mb-2">
+                            <Text className="text-xs font-medium text-slate-400">{day}</Text>
+                        </View>
+                    ))}
+                    {Array.from({ length: monthStart.getDay() }).map((_, i) => (
+                        <View key={`e-${i}`} style={{ width: "14.28%", aspectRatio: 1 }} />
+                    ))}
+                    {daysInMonth.map((d, i) => {
+                        const dayEntries = entries.filter((e) => isSameDay(new Date(e.createdAt), d));
+                        const isToday = isSameDay(d, new Date());
+                        return (
+                            <View key={i} style={{ width: "14.28%", aspectRatio: 1 }} className="items-center justify-start pt-1">
+                                <View className={`w-6 h-6 rounded-full items-center justify-center ${isToday ? "bg-blue-50" : ""}`}>
+                                    <Text className={`text-xs ${isToday ? "font-bold text-blue-600" : "text-slate-600"}`}>
+                                        {format(d, "d")}
+                                    </Text>
+                                </View>
+                                <View className="flex-row gap-0.5 mt-0.5">
+                                    {dayEntries.slice(0, 3).map((e, j) => (
+                                        <View key={j} className={`w-1.5 h-1.5 rounded-full ${getDotColor(e.type)}`} />
+                                    ))}
+                                </View>
+                            </View>
+                        );
+                    })}
+                </View>
+            </View>
+        );
     };
 
     return (
-        <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={handlePress}
-            className={`${color} rounded-[24px] p-4 flex-1 min-w-[150px] flex-row items-center border border-white/20 shadow-sm shadow-primary/5`}
-        >
-            <View className="w-8 h-8 bg-white/80 rounded-lg items-center justify-center mr-3">
-                <Icon size={14} color={iconColor} />
-            </View>
-            <Text className="text-text-main font-body font-bold text-sm">{label}</Text>
-        </TouchableOpacity>
+        <View className="flex-1 bg-slate-50">
+            <ScrollView className="flex-1" contentContainerStyle={{ paddingBottom: 120, padding: 24 }} showsVerticalScrollIndicator={false}>
+                {/* Header */}
+                <View className="flex-row items-center justify-between mb-8">
+                    <View className="flex-row items-center gap-4">
+                        <View className="w-12 h-12 rounded-full bg-slate-200 overflow-hidden">
+                            {user?.picture ? (
+                                <Image source={{ uri: user.picture }} className="w-12 h-12" />
+                            ) : (
+                                <View className="w-12 h-12 bg-slate-200 items-center justify-center">
+                                    <Text className="text-slate-500 font-semibold text-lg">
+                                        {user?.name?.charAt(0) || "U"}
+                                    </Text>
+                                </View>
+                            )}
+                        </View>
+                        <View>
+                            <Text className="font-semibold text-lg text-slate-900">
+                                {user?.name || "Guest User"}
+                            </Text>
+                            <Text className="text-sm text-slate-500">Welcome back</Text>
+                        </View>
+                    </View>
+                    <View className="flex-row gap-3">
+                        <TouchableOpacity
+                            className="p-2 bg-white rounded-full flex-row items-center justify-center gap-1 px-3"
+                            style={{ shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 }}
+                            onPress={handleSync}
+                        >
+                            <Cloud size={20} color="#3b82f6" />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            className="p-2 bg-white rounded-full"
+                            style={{ shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 }}
+                            onPress={() => router.push("/(tabs)/settings")}
+                        >
+                            <Settings size={20} color="#475569" />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            className="p-2 bg-white rounded-full"
+                            style={{ shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 }}
+                        >
+                            <Bell size={20} color="#475569" />
+                        </TouchableOpacity>
+                    </View>
+                </View>
+
+                {/* Drive Sync Modal Indicator */}
+                <DriveSyncModal
+                    visible={syncVisible}
+                    status={syncStatus}
+                    folderId={syncFolderId}
+                    onClose={() => setSyncVisible(false)}
+                />
+
+                {/* Activity Calendar */}
+                <View className="mb-8">
+                    <View className="flex-row items-center justify-between mb-4">
+                        <Text className="text-lg font-semibold text-slate-900">Activity</Text>
+                        <View className="flex-row gap-2">
+                            <TouchableOpacity onPress={handlePrevMonth} className="p-1.5 rounded-full bg-white" style={{ shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 }}>
+                                <ChevronLeft size={20} color="#475569" />
+                            </TouchableOpacity>
+                            <TouchableOpacity onPress={handleNextMonth} className="p-1.5 rounded-full bg-white" style={{ shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 }}>
+                                <ChevronRight size={20} color="#475569" />
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                        <View className="flex-row gap-4">
+                            {renderMonth(baseDate)}
+                            {renderMonth(addMonths(baseDate, 1))}
+                        </View>
+                    </ScrollView>
+                </View>
+
+                {/* Recent Notes */}
+                <View>
+                    <Text className="text-lg font-semibold text-slate-900 mb-4">Recent Notes</Text>
+
+                    {/* Search */}
+                    <View className="relative mb-6">
+                        <View className="absolute left-4 top-4 z-10">
+                            <Search size={20} color="#94a3b8" />
+                        </View>
+                        <TextInput
+                            placeholder="Search notes, tags..."
+                            className="bg-white rounded-2xl py-4 pl-12 pr-12 text-slate-800"
+                            placeholderTextColor="#94a3b8"
+                            style={{ shadowColor: "#000", shadowOpacity: 0.03, shadowRadius: 8, elevation: 2 }}
+                        />
+                        <View className="absolute right-4 top-4">
+                            <Mic size={20} color="#94a3b8" />
+                        </View>
+                    </View>
+
+                    {/* Entry cards */}
+                    {entries.slice(0, 5).map((entry) => (
+                        <TouchableOpacity
+                            key={entry.id}
+                            onPress={() => router.push(`/journal/${entry.id}`)}
+                            className={`${getEntryBgColor(entry.type)} p-5 rounded-3xl mb-4 border border-slate-100`}
+                            activeOpacity={0.7}
+                        >
+                            <View className="flex-row justify-between items-start mb-2">
+                                <Text className={`font-semibold text-lg ${getEntryTextColor(entry.type)}`}>
+                                    {entry.title || "Untitled"}
+                                </Text>
+                                <Text className="text-xs text-slate-400 ml-4">
+                                    {new Date(entry.createdAt).toLocaleDateString()}
+                                </Text>
+                            </View>
+                            <Text className="text-sm text-slate-600 mb-4" numberOfLines={2}>
+                                {entry.content || (entry.type === "recipe" ? "Recipe details..." : "No content")}
+                            </Text>
+                            <View className="flex-row gap-2 flex-wrap">
+                                <View className="px-3 py-1 bg-white/60 rounded-full">
+                                    <Text className="text-xs font-medium capitalize">{entry.type}</Text>
+                                </View>
+                                {entry.tags.map((tag) => (
+                                    <View key={tag} className="px-3 py-1 bg-white/60 rounded-full">
+                                        <Text className="text-xs font-medium">{tag}</Text>
+                                    </View>
+                                ))}
+                            </View>
+                        </TouchableOpacity>
+                    ))}
+                    {entries.length === 0 && (
+                        <Text className="text-slate-500 text-center py-8">No entries yet. Create one above!</Text>
+                    )}
+                </View>
+            </ScrollView>
+        </View>
     );
 }

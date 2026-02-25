@@ -1,0 +1,5 @@
+{
+  "name": "Mindful Notes & Journal",
+  "description": "A modern AI-powered application for notes, voice journaling, recipes, image generation, and chat.",
+  "requestFramePermissions": ["microphone"]
+}
